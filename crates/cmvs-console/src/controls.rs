@@ -37,6 +37,19 @@ const WHEEL_REPEAT_MS: u32 = 100;
 /// session.
 pub const QUIT_HOLD_MS: u32 = 1000;
 
+/// What the right stick does in game. [`Self::Scroll`] is the shared default (Vita
+/// and the original Switch layout); [`Self::Cursor`] moves the pointer slowly for
+/// fine aiming instead, leaving scrolling to the wheel buttons alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RightStick {
+    #[default]
+    Scroll,
+    Cursor,
+}
+
+/// Right-stick cursor speed relative to the left stick.
+const FINE_CURSOR_SCALE: f64 = 0.3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TouchState {
     Idle,
@@ -62,6 +75,7 @@ pub struct Controls {
     focused: bool,
     /// Buttons ignored until released: held across a focus change or system applet.
     blocked: u32,
+    right_stick: RightStick,
 }
 
 impl Controls {
@@ -81,7 +95,14 @@ impl Controls {
             quit_ms: 0,
             focused: true,
             blocked: 0,
+            right_stick: RightStick::Scroll,
         }
+    }
+
+    /// Selects the right-stick policy; the default is [`RightStick::Scroll`].
+    pub fn right_stick(mut self, mode: RightStick) -> Self {
+        self.right_stick = mode;
+        self
     }
 
     /// Losing focus cancels held input without producing release clicks; on return,
@@ -124,8 +145,14 @@ impl Controls {
         for (latched, held) in self.latched.iter_mut().zip(self.held) {
             *latched |= held;
         }
-        self.move_cursor(sample.sticks[0], dt_ms);
-        self.scroll(buttons, sample.sticks[1][1], dt_ms);
+        self.move_cursor(sample.sticks[0], dt_ms, 1.0);
+        match self.right_stick {
+            RightStick::Scroll => self.scroll(buttons, sample.sticks[1][1], dt_ms),
+            RightStick::Cursor => {
+                self.move_cursor(sample.sticks[1], dt_ms, FINE_CURSOR_SCALE);
+                self.scroll(buttons, 0, dt_ms);
+            }
+        }
         self.quit_ms = if buttons & self.map.exit != 0 {
             self.quit_ms.saturating_add(dt_ms)
         } else {
@@ -165,7 +192,7 @@ impl Controls {
         };
     }
 
-    fn move_cursor(&mut self, stick: [i32; 2], dt_ms: u32) {
+    fn move_cursor(&mut self, stick: [i32; 2], dt_ms: u32, scale: f64) {
         let axis = |value: i32| {
             let value = f64::from(value).clamp(-STICK_MAX, STICK_MAX);
             let magnitude =
@@ -177,7 +204,7 @@ impl Controls {
         if dx == 0.0 && dy == 0.0 {
             return;
         }
-        let speed = f64::from(self.size[0]) / CURSOR_CROSSING_MS * f64::from(dt_ms);
+        let speed = f64::from(self.size[0]) / CURSOR_CROSSING_MS * f64::from(dt_ms) * scale;
         self.cursor = [
             (self.cursor[0] + dx * speed).clamp(0.0, f64::from(self.size[0] - 1)),
             (self.cursor[1] + dy * speed).clamp(0.0, f64::from(self.size[1] - 1)),
@@ -395,6 +422,32 @@ mod tests {
         }
         assert_eq!(controls.pointer(), [853, 719]);
         assert!(controls.cursor_visible());
+    }
+
+    #[test]
+    fn right_stick_cursor_mode_aims_slowly_and_leaves_scrolling_to_buttons() {
+        let viewport = view([1280, 720]);
+        let mut controls = Controls::new([1280, 720], map()).right_stick(RightStick::Cursor);
+        let mut input = ActionInput::default();
+        let b = bindings();
+        let right = PadInput {
+            sticks: [[0, 0], [32767, 0]],
+            ..sample(0)
+        };
+        controls.poll(&right, viewport, 100);
+        controls.frame(&b, &mut input);
+        // Full left-stick deflection moves about 106 px per 100 ms; fine mode 32.
+        assert_eq!(controls.pointer(), [672, 360]);
+        let up = PadInput {
+            sticks: [[0, 0], [0, 32767]],
+            ..sample(0)
+        };
+        controls.poll(&up, viewport, 10);
+        controls.frame(&b, &mut input);
+        assert!(!input.mouse(2)[2], "the right stick no longer sends notches");
+        controls.poll(&sample(button::R), viewport, 10);
+        controls.frame(&b, &mut input);
+        assert!(input.mouse(3)[2], "wheel buttons still scroll");
     }
 
     #[test]

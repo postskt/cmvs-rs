@@ -16,8 +16,6 @@ enum {
     CMVS_GPU_NO_MEMORY = -2, /* texture memory or slots exhausted; release and retry */
 };
 
-#define SCREEN_W 1280
-#define SCREEN_H 720
 #define SWAP_IMAGES 2
 #define MAX_TEXTURES 4096
 #define CANVAS_SLOT 0 /* image descriptor 0; texture n uses descriptor n + 1 */
@@ -77,6 +75,7 @@ static struct {
     DkSwapchain swapchain;
     DkImage canvas;
     u32 canvas_size[2];
+    u32 screen[2];
     DkShader scene_vsh, scene_fsh, present_vsh, present_fsh;
     u32 cmd_used, staging_used;
     bool reserve_given, recorded, barrier_due, released;
@@ -383,6 +382,47 @@ static bool load_shader(DkShader *shader, const u8 *start, const u8 *end, u32 *o
 
 void cmvs_gpu_close(void);
 
+/* Docked mode drives a 1080p display; handheld and tabletop are 720p. */
+static void mode_screen_size(u32 out[2]) {
+    bool docked = appletGetOperationMode() == AppletOperationMode_Console;
+    out[0] = docked ? 1920 : 1280;
+    out[1] = docked ? 1080 : 720;
+}
+
+/* Allocates the present images and binds them to the default window. The caller
+   destroys any previous swapchain and its memory first. */
+static bool make_swapchain(u32 width, u32 height) {
+    DkImageLayoutMaker layout_maker;
+    dkImageLayoutMakerDefaults(&layout_maker, g.device);
+    layout_maker.flags =
+        DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_HwCompression;
+    layout_maker.format = DkImageFormat_RGBA8_Unorm;
+    layout_maker.dimensions[0] = width;
+    layout_maker.dimensions[1] = height;
+    DkImageLayout layout;
+    dkImageLayoutInitialize(&layout, &layout_maker);
+    u32 align = dkImageLayoutGetAlignment(&layout);
+    u32 size = ALIGN((u32)dkImageLayoutGetSize(&layout), align);
+    g.swap_memory = memblock(SWAP_IMAGES * size, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image);
+    if (!g.swap_memory) {
+        fail("GPU swapchain allocation failed");
+        return false;
+    }
+    DkImage const *images[SWAP_IMAGES];
+    for (u32 i = 0; i < SWAP_IMAGES; ++i) {
+        dkImageInitialize(&g.swap[i], &layout, g.swap_memory, i * size);
+        images[i] = &g.swap[i];
+    }
+    DkSwapchainMaker swapchain;
+    dkSwapchainMakerDefaults(&swapchain, g.device, nwindowGetDefault(), images, SWAP_IMAGES);
+    g.swapchain = dkSwapchainCreate(&swapchain);
+    if (!g.swapchain) {
+        fail("GPU swapchain creation failed");
+        return false;
+    }
+    return status() == CMVS_GPU_OK;
+}
+
 int cmvs_gpu_open(void) {
     if (g.open)
         return CMVS_GPU_ERROR; /* the Rust owner flag prevents this */
@@ -437,38 +477,41 @@ int cmvs_gpu_open(void) {
     g.cmdbuf = dkCmdBufCreate(&cmdbuf);
     dkCmdBufAddMemory(g.cmdbuf, g.cmd, 0, CMD_SIZE - CMD_RESERVE);
 
-    DkImageLayoutMaker layout_maker;
-    dkImageLayoutMakerDefaults(&layout_maker, g.device);
-    layout_maker.flags =
-        DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_HwCompression;
-    layout_maker.format = DkImageFormat_RGBA8_Unorm;
-    layout_maker.dimensions[0] = SCREEN_W;
-    layout_maker.dimensions[1] = SCREEN_H;
-    DkImageLayout layout;
-    dkImageLayoutInitialize(&layout, &layout_maker);
-    u32 align = dkImageLayoutGetAlignment(&layout);
-    u32 size = ALIGN((u32)dkImageLayoutGetSize(&layout), align);
-    g.swap_memory = memblock(SWAP_IMAGES * size, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image);
-    if (!g.swap_memory) {
-        fail("GPU swapchain allocation failed");
-        cmvs_gpu_close();
-        return CMVS_GPU_ERROR;
-    }
-    DkImage const *images[SWAP_IMAGES];
-    for (u32 i = 0; i < SWAP_IMAGES; ++i) {
-        dkImageInitialize(&g.swap[i], &layout, g.swap_memory, i * size);
-        images[i] = &g.swap[i];
-    }
-    DkSwapchainMaker swapchain;
-    dkSwapchainMakerDefaults(&swapchain, g.device, nwindowGetDefault(), images, SWAP_IMAGES);
-    g.swapchain = dkSwapchainCreate(&swapchain);
-    if (!g.swapchain)
-        fail("GPU swapchain creation failed");
-    if (status() != CMVS_GPU_OK) {
+    mode_screen_size(g.screen);
+    if (!make_swapchain(g.screen[0], g.screen[1])) {
         cmvs_gpu_close();
         return CMVS_GPU_ERROR;
     }
     return CMVS_GPU_OK;
+}
+
+/* Rebuilds the swapchain for a new display size. Call between frames: the queue is
+   idled here, and nothing may be recorded against the old images afterwards. The
+   canvas and texture cache are untouched. */
+int cmvs_gpu_resize(u32 width, u32 height) {
+    if (status() != CMVS_GPU_OK)
+        return CMVS_GPU_ERROR;
+    if (width == g.screen[0] && height == g.screen[1])
+        return CMVS_GPU_OK;
+    if (!width || !height || width > 1920 || height > 1080) {
+        fail("invalid GPU screen size");
+        return CMVS_GPU_ERROR;
+    }
+    idle();
+    g.pass = PASS_NONE;
+    if (g.swapchain) {
+        dkSwapchainDestroy(g.swapchain);
+        g.swapchain = NULL;
+    }
+    if (g.swap_memory) {
+        dkMemBlockDestroy(g.swap_memory);
+        g.swap_memory = NULL;
+    }
+    g.screen[0] = width;
+    g.screen[1] = height;
+    if (!make_swapchain(width, height))
+        return CMVS_GPU_ERROR;
+    return status();
 }
 
 /* Copies the first error message; returns its length. Errors are sticky. */
@@ -694,11 +737,14 @@ int cmvs_gpu_scale(u32 id, const float view[8]) {
 }
 
 /* Ends the canvas pass and shows it on screen, then draws `count` replace-blended
-   24-float scene overlays (the host cursor) in screen coordinates. */
-int cmvs_gpu_present(const float view[8], const float *overlays, u32 count) {
+   24-float scene overlays (the host cursor) in screen coordinates. A non-zero
+   `toast` is an opaque host box drawn in screen coordinates before the cursor;
+   it never touches the canvas, so device readback stays clean. */
+int cmvs_gpu_present(const float view[8], const float *overlays, u32 count, u32 toast,
+                     const float toast_view[8]) {
     if (status() != CMVS_GPU_OK)
         return CMVS_GPU_ERROR;
-    if (g.pass != PASS_CANVAS || count > 16) {
+    if (g.pass != PASS_CANVAS || count > 16 || (toast && !lookup(toast))) {
         fail("invalid GPU present");
         return CMVS_GPU_ERROR;
     }
@@ -708,9 +754,14 @@ int cmvs_gpu_present(const float view[8], const float *overlays, u32 count) {
     submit();
     /* Canvas work runs while the queue waits for a free swapchain image. */
     int slot = dkQueueAcquireImage(g.queue, g.swapchain);
-    reserve(COST_PASS + count * COST_DRAW);
-    bind_target(&g.swap[slot], SCREEN_W, SCREEN_H);
+    reserve(COST_PASS + (count + (toast ? 1 : 0)) * COST_DRAW);
+    bind_target(&g.swap[slot], g.screen[0], g.screen[1]);
     draw_present(view, dkMakeTextureHandle(CANVAS_SLOT, 0));
+    if (toast) {
+        /* The box was uploaded mid-frame; make the copy visible to sampling. */
+        barrier_if_due();
+        draw_present(toast_view, handle(toast));
+    }
     if (count) {
         bind_scene(DkColorMask_RGB);
         bind_blend(0);

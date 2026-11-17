@@ -21,6 +21,15 @@ impl SwitchWindow {
     pub fn present(&mut self, _: &[u32]) -> Result<(), &'static str> {
         Err(UNAVAILABLE)
     }
+    pub fn screen_size(&self) -> [u32; 2] {
+        [1280, 720]
+    }
+    pub fn take_mode_changed(&mut self) -> bool {
+        false
+    }
+    pub fn resize(&mut self, _: [u32; 2]) -> Result<(), &'static str> {
+        Err(UNAVAILABLE)
+    }
 }
 
 pub struct SwitchGpu;
@@ -46,7 +55,15 @@ impl SwitchGpu {
     pub fn scale(&mut self, _: GpuTexture, _: [f32; 8]) -> Result<(), GpuError> {
         gpu_unavailable()
     }
-    pub fn present(&mut self, _: [f32; 8], _: &[[f32; 24]]) -> Result<(), GpuError> {
+    pub fn present(
+        &mut self,
+        _: [f32; 8],
+        _: &[[f32; 24]],
+        _: Option<(GpuTexture, [f32; 8])>,
+    ) -> Result<(), GpuError> {
+        gpu_unavailable()
+    }
+    pub fn resize(&mut self, _: [u32; 2]) -> Result<(), GpuError> {
         gpu_unavailable()
     }
     pub fn read(&mut self, _: [u32; 2], _: &mut [u8]) -> Result<(), GpuError> {

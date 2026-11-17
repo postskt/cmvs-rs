@@ -1,7 +1,7 @@
 //! deko3d execution of the shared scene queue through
 //! [`cmvs_console::gpu::Compositor`]; movie scaling, presentation and readback are the
 //! Switch's own. Readback happens only when the engine requests a device frame.
-use crate::{SCREEN, sys::SwitchGpu};
+use crate::sys::SwitchGpu;
 use cmvs_console::gpu::Compositor;
 use cmvs_core::{
     raster::RgbaImage,
@@ -56,15 +56,42 @@ impl GpuRenderer {
         result
     }
 
-    /// Shows the canvas with the engine's display `mode`; `cursor` is a screen
-    /// position for the host crosshair, which device readback never includes.
-    pub fn present(&mut self, mode: u32, linear: bool, cursor: Option<[f64; 2]>) -> Result<()> {
+    /// Rebuilds the swapchain for a new display size between frames.
+    pub fn resize(&mut self, size: [u32; 2]) -> Result<()> {
+        Ok(self.0.device().resize(size)?)
+    }
+
+    /// Shows the canvas on the `screen`-sized display with the engine's display
+    /// `mode`; `cursor` is a screen position for the host crosshair and `toast` an
+    /// opaque host box at a screen position. Both are drawn on the display only:
+    /// device readback never includes them.
+    pub fn present(
+        &mut self,
+        screen: [u32; 2],
+        mode: u32,
+        linear: bool,
+        cursor: Option<[f64; 2]>,
+        toast: Option<(&RgbaImage, [u32; 2])>,
+    ) -> Result<()> {
         let size = self.0.canvas().ok_or("no GPU canvas to present")?;
-        let view = Viewport::new(size, SCREEN, mode)?;
-        let overlays = cursor.map(cursor_overlays).unwrap_or_default();
-        self.0
+        let view = Viewport::new(size, screen, mode)?;
+        let overlays = cursor.map(|at| cursor_overlays(at, screen)).unwrap_or_default();
+        let uploaded = match toast {
+            Some((image, at)) => {
+                let texture = self.0.upload(image)?;
+                let (w, h) = (image.width() as f32, image.height() as f32);
+                Some((texture, [at[0] as f32, at[1] as f32, w, h, w, h, 0.0, 0.0]))
+            }
+            None => None,
+        };
+        let result = self
+            .0
             .device()
-            .present(view_params(view, size, linear), &overlays)?;
+            .present(view_params(view, size, linear), &overlays, uploaded);
+        if let Some((texture, _)) = uploaded {
+            self.0.device().release_texture(texture);
+        }
+        result?;
         self.0.mark_presented();
         Ok(())
     }
@@ -92,7 +119,7 @@ fn view_params(view: Viewport, source: [u32; 2], linear: bool) -> [f32; 8] {
 }
 
 /// The software host's 11-pixel white crosshair as two solid scene quads.
-fn cursor_overlays(at: [f64; 2]) -> Vec<[f32; BASE_FLOATS]> {
+fn cursor_overlays(at: [f64; 2], screen: [u32; 2]) -> Vec<[f32; BASE_FLOATS]> {
     let [x, y] = at.map(|v| v as i64);
     [[x - 5, y, 11, 1], [x, y - 5, 1, 11]]
         .map(|rect| {
@@ -103,7 +130,7 @@ fn cursor_overlays(at: [f64; 2]) -> Vec<[f32; BASE_FLOATS]> {
                     alpha: 255,
                     blend: Blend::Replace,
                 },
-                SCREEN,
+                screen,
             );
             let mut params = [0.0; BASE_FLOATS];
             params.copy_from_slice(&draw.params[..BASE_FLOATS]);
@@ -117,7 +144,7 @@ mod tests {
     use super::*;
     #[test]
     fn cursor_matches_the_software_crosshair() {
-        let [horizontal, vertical] = cursor_overlays([100.7, 50.2])[..] else {
+        let [horizontal, vertical] = cursor_overlays([100.7, 50.2], [1280, 720])[..] else {
             panic!("two quads");
         };
         // Strip corners TL, TR, BL, BR in screen pixels.

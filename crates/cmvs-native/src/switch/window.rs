@@ -21,16 +21,21 @@ struct NxInput {
 }
 const FLAG_EXIT: u32 = 1;
 const FLAG_FOCUSED: u32 = 2;
+const FLAG_MODE_CHANGED: u32 = 4;
 
 unsafe extern "C" {
     fn cmvs_nx_open(framebuffer: i32) -> i32;
     fn cmvs_nx_poll(out: *mut NxInput);
     fn cmvs_nx_present(pixels: *const u32);
     fn cmvs_nx_close();
+    fn cmvs_nx_screen_size(out: *mut u32);
+    fn cmvs_nx_resize(width: u32, height: u32) -> i32;
 }
 
 pub struct SwitchWindow {
     framebuffer: bool,
+    screen: [u32; 2],
+    mode_changed: bool,
     _thread: PhantomData<Rc<()>>,
 }
 impl SwitchWindow {
@@ -58,15 +63,45 @@ impl SwitchWindow {
             OWNED.store(false, Ordering::Release);
             return Err("libnx framebuffer initialization failed");
         }
+        let mut screen = [0u32; 2];
+        // SAFETY: C writes exactly two u32.
+        unsafe { cmvs_nx_screen_size(screen.as_mut_ptr()) };
         Ok(Self {
             framebuffer,
+            screen,
+            mode_changed: false,
             _thread: PhantomData,
         })
+    }
+    /// The current display size: 1920x1080 docked, 1280x720 handheld/tabletop.
+    pub fn screen_size(&self) -> [u32; 2] {
+        self.screen
+    }
+    /// True once after the docked/handheld operation mode changed since the previous
+    /// call; the host then resizes the window and GPU to [`Self::screen_size`].
+    pub fn take_mode_changed(&mut self) -> bool {
+        std::mem::take(&mut self.mode_changed)
+    }
+    /// Rebuilds the software framebuffer for a new display size, between presents.
+    /// A window opened for the GPU has no framebuffer; its swapchain is resized
+    /// through `SwitchGpu::resize` instead.
+    pub fn resize(&mut self, size: [u32; 2]) -> Result<(), &'static str> {
+        // SAFETY: C rebuilds the framebuffer synchronously and keeps no pointer.
+        if unsafe { cmvs_nx_resize(size[0], size[1]) } != 0 {
+            return Err("libnx framebuffer resize failed");
+        }
+        self.screen = size;
+        Ok(())
     }
     pub fn poll(&mut self) -> PadInput {
         let mut raw = NxInput::default();
         // SAFETY: C writes exactly one `CmvsNxInput`, a layout this struct mirrors.
         unsafe { cmvs_nx_poll(&mut raw) };
+        if raw.flags & FLAG_MODE_CHANGED != 0 {
+            // SAFETY: C writes exactly two u32.
+            unsafe { cmvs_nx_screen_size(self.screen.as_mut_ptr()) };
+            self.mode_changed = true;
+        }
         let count = (raw.touch_count as usize).min(TOUCHES);
         PadInput {
             exit: raw.flags & FLAG_EXIT != 0,
@@ -86,10 +121,11 @@ impl SwitchWindow {
         if !self.framebuffer {
             return Err("Switch window was opened for the GPU");
         }
-        if pixels.len() != 1280 * 720 {
+        if pixels.len() as u64 != u64::from(self.screen[0]) * u64::from(self.screen[1]) {
             return Err("invalid Switch canvas length");
         }
-        // SAFETY: C synchronously reads precisely 1280*720 pixels; does not retain pointer.
+        // SAFETY: C synchronously reads precisely screen[0]*screen[1] pixels; does not
+        // retain the pointer.
         unsafe { cmvs_nx_present(pixels.as_ptr()) };
         Ok(())
     }

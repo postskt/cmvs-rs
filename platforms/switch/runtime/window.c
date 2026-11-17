@@ -19,6 +19,7 @@ typedef struct {
 enum {
     CMVS_FLAG_EXIT = 1,
     CMVS_FLAG_FOCUSED = 2,
+    CMVS_FLAG_MODE_CHANGED = 4,
 };
 
 static Framebuffer fb;
@@ -26,15 +27,32 @@ static PadState pad;
 static bool opened;
 static bool has_framebuffer;
 static bool exit_locked;
+static u32 fb_size[2];
+static AppletOperationMode last_mode;
+
+/* Docked mode drives a 1080p display; handheld and tabletop are 720p. */
+static void screen_size(u32 out[2]) {
+    bool docked = appletGetOperationMode() == AppletOperationMode_Console;
+    out[0] = docked ? 1920 : 1280;
+    out[1] = docked ? 1080 : 720;
+}
+
+void cmvs_nx_screen_size(u32 out[2]) {
+    screen_size(out);
+}
 
 /* Without the software framebuffer, the default window is left to the deko3d
    swapchain in gpu.c. */
 int cmvs_nx_open(int framebuffer) {
     if (opened)
         return -1;
+    /* NSP applications read game data packed into their RomFS; an NRO has none
+       and the call simply fails, which the boot probe treats as "no RomFS". */
+    romfsInit();
+    screen_size(fb_size);
     if (framebuffer) {
-        Result rc =
-            framebufferCreate(&fb, nwindowGetDefault(), 1280, 720, PIXEL_FORMAT_RGBA_8888, 2);
+        Result rc = framebufferCreate(&fb, nwindowGetDefault(), fb_size[0], fb_size[1],
+                                      PIXEL_FORMAT_RGBA_8888, 2);
         if (R_FAILED(rc))
             return -1;
         rc = framebufferMakeLinear(&fb);
@@ -44,6 +62,7 @@ int cmvs_nx_open(int framebuffer) {
         }
     }
     has_framebuffer = framebuffer != 0;
+    last_mode = appletGetOperationMode();
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&pad);
     hidInitializeTouchScreen();
@@ -51,6 +70,28 @@ int cmvs_nx_open(int framebuffer) {
        process, so the host can persist settings. Unavailable in applet mode. */
     exit_locked = R_SUCCEEDED(appletLockExit());
     opened = true;
+    return 0;
+}
+
+/* Rebuilds the software framebuffer for a new display size, between presents. */
+int cmvs_nx_resize(u32 width, u32 height) {
+    if (!has_framebuffer)
+        return 0;
+    framebufferClose(&fb);
+    Result rc =
+        framebufferCreate(&fb, nwindowGetDefault(), width, height, PIXEL_FORMAT_RGBA_8888, 2);
+    if (R_FAILED(rc)) {
+        has_framebuffer = false;
+        return -1;
+    }
+    rc = framebufferMakeLinear(&fb);
+    if (R_FAILED(rc)) {
+        framebufferClose(&fb);
+        has_framebuffer = false;
+        return -1;
+    }
+    fb_size[0] = width;
+    fb_size[1] = height;
     return 0;
 }
 
@@ -77,6 +118,11 @@ void cmvs_nx_poll(CmvsNxInput *out) {
     }
     if (appletGetFocusState() == AppletFocusState_InFocus)
         out->flags |= CMVS_FLAG_FOCUSED;
+    AppletOperationMode mode = appletGetOperationMode();
+    if (mode != last_mode) {
+        last_mode = mode;
+        out->flags |= CMVS_FLAG_MODE_CHANGED;
+    }
     padUpdate(&pad);
     out->buttons = map_buttons(padGetButtons(&pad));
     for (unsigned i = 0; i < 2; ++i) {
@@ -101,10 +147,10 @@ void cmvs_nx_present(const u32 *pixels) {
         return;
     u32 stride;
     u8 *out = framebufferBegin(&fb, &stride);
-    for (unsigned y = 0; y < 720; ++y) {
+    for (u32 y = 0; y < fb_size[1]; ++y) {
         u32 *row = (u32 *)(out + y * stride);
-        for (unsigned x = 0; x < 1280; ++x) {
-            u32 p = pixels[y * 1280 + x]; /* core output is 0x00RRGGBB */
+        for (u32 x = 0; x < fb_size[0]; ++x) {
+            u32 p = pixels[y * fb_size[0] + x]; /* core output is 0x00RRGGBB */
             row[x] = 0xff000000 | ((p & 255) << 16) | (p & 0xff00) | ((p >> 16) & 255);
         }
     }
@@ -118,5 +164,6 @@ void cmvs_nx_close(void) {
     if (exit_locked)
         appletUnlockExit();
     exit_locked = false;
+    romfsExit();
     opened = false;
 }

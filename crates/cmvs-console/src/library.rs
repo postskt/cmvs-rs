@@ -47,6 +47,39 @@ pub fn discover(base: &Path) -> io::Result<Vec<GameEntry>> {
     Ok(games)
 }
 
+/// Flat layout: every direct subdirectory of `base` is a game, except the player's
+/// own `users/` save directory and dot directories. The legacy `game/` and `games/`
+/// layouts are still recognised, so cards prepared for older players keep working.
+pub fn discover_flat(base: &Path) -> io::Result<Vec<GameEntry>> {
+    let mut games = Vec::new();
+    let entries = match std::fs::read_dir(base) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(games),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || matches!(name.as_str(), "users" | "game" | "games") {
+            continue;
+        }
+        // Metadata follows links; Horizon directory entries carry no reliable type.
+        if is_dir(&entry.path())? {
+            games.push(GameEntry {
+                name,
+                root: entry.path(),
+            });
+        }
+    }
+    for legacy in discover(base)? {
+        if !games.iter().any(|game| game.root == legacy.root) {
+            games.push(legacy);
+        }
+    }
+    games.sort_by_cached_key(|game| (game.name.to_lowercase(), game.name.clone()));
+    Ok(games)
+}
+
 fn is_dir(path: &Path) -> io::Result<bool> {
     match std::fs::metadata(path) {
         Ok(metadata) => Ok(metadata.is_dir()),
@@ -107,6 +140,41 @@ mod tests {
         assert_eq!(last_started(&base, &games), 2);
         std::fs::remove_dir_all(base.join("games/beta")).unwrap();
         assert_eq!(last_started(&base, &discover(&base).unwrap()), 0);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn flat_layout_lists_game_directories_including_cjk_names() {
+        let base = scratch("library-flat");
+        assert!(discover_flat(&base).unwrap().is_empty());
+        for dir in ["アマツツミ", "中文游戏", "Alpha", "users", ".hidden"] {
+            std::fs::create_dir_all(base.join(dir)).unwrap();
+        }
+        std::fs::write(base.join("cmvs-switch.nro"), "program").unwrap();
+        std::fs::write(base.join("font.ttf"), "font").unwrap();
+        let games = discover_flat(&base).unwrap();
+        let names: Vec<_> = games.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["Alpha", "アマツツミ", "中文游戏"]);
+        assert_eq!(games[1].root, base.join("アマツツミ"));
+        // Save data lives beside the games but is never listed as one.
+        std::fs::create_dir_all(base.join("users/amatsutsumi")).unwrap();
+        assert_eq!(discover_flat(&base).unwrap().len(), 3);
+        // Save writes and the remembered game name survive CJK paths (the SD card
+        // filesystem layer receives the same UTF-8 paths on Horizon).
+        let user = base.join("users").join("アマツツミ");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::write(user.join("save.dat"), [1u8, 2, 3]).unwrap();
+        assert_eq!(std::fs::read(user.join("save.dat")).unwrap(), vec![1, 2, 3]);
+        remember(&base, &games[1]);
+        assert_eq!(last_started(&base, &discover_flat(&base).unwrap()), 1);
+        // The legacy layout keeps working on the same card.
+        std::fs::create_dir_all(base.join("games/beta")).unwrap();
+        let names: Vec<_> = discover_flat(&base)
+            .unwrap()
+            .into_iter()
+            .map(|g| g.name)
+            .collect();
+        assert_eq!(names, ["Alpha", "beta", "アマツツミ", "中文游戏"]);
         std::fs::remove_dir_all(&base).unwrap();
     }
 }

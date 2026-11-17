@@ -25,7 +25,14 @@ unsafe extern "C" {
     fn cmvs_gpu_begin_canvas(width: u32, height: u32, clear: *const u8) -> i32;
     fn cmvs_gpu_draw(blend: u32, params: *const f32, count: u32, ids: *const u32) -> i32;
     fn cmvs_gpu_scale(id: u32, view: *const f32) -> i32;
-    fn cmvs_gpu_present(view: *const f32, overlays: *const f32, count: u32) -> i32;
+    fn cmvs_gpu_present(
+        view: *const f32,
+        overlays: *const f32,
+        count: u32,
+        toast: u32,
+        toast_view: *const f32,
+    ) -> i32;
+    fn cmvs_gpu_resize(width: u32, height: u32) -> i32;
     fn cmvs_gpu_read(out: *mut u8, width: u32, height: u32) -> i32;
     fn cmvs_gpu_close();
 }
@@ -57,20 +64,40 @@ impl SwitchGpu {
         // SAFETY: C reads eight floats and validates the id.
         check(unsafe { cmvs_gpu_scale(texture.0, view.as_ptr()) })
     }
-    /// Shows the canvas in the 1280x720 screen viewport (as for [`Self::scale`]), then
-    /// draws replace-blended 24-float scene overlays in screen coordinates.
-    pub fn present(&mut self, view: [f32; 8], overlays: &[[f32; 24]]) -> Result<(), GpuError> {
+    /// Shows the canvas in the screen viewport (as for [`Self::scale`]), then draws
+    /// an optional opaque host box (a toast) and replace-blended 24-float scene
+    /// overlays in screen coordinates. Neither ever touches the canvas, so
+    /// [`Self::read`] never includes them.
+    pub fn present(
+        &mut self,
+        view: [f32; 8],
+        overlays: &[[f32; 24]],
+        toast: Option<(GpuTexture, [f32; 8])>,
+    ) -> Result<(), GpuError> {
         if overlays.len() > MAX_OVERLAYS {
             return Err(GpuError::Device("too many GPU overlays".into()));
         }
-        // SAFETY: C reads eight floats and `overlays.len()` contiguous 24-float arrays.
+        let (toast_id, toast_view) = match toast {
+            Some((texture, view)) => (texture.0, view),
+            None => (0, [0.0; 8]),
+        };
+        // SAFETY: C reads eight floats, `overlays.len()` contiguous 24-float arrays
+        // and eight more floats, and validates the texture id.
         check(unsafe {
             cmvs_gpu_present(
                 view.as_ptr(),
                 overlays.as_ptr().cast(),
                 overlays.len() as u32,
+                toast_id,
+                toast_view.as_ptr(),
             )
         })
+    }
+    /// Rebuilds the swapchain for a new display size between frames; the canvas and
+    /// texture cache survive. Call after the queue has presented, before rendering.
+    pub fn resize(&mut self, size: [u32; 2]) -> Result<(), GpuError> {
+        // SAFETY: C idles the queue and rebuilds the swapchain synchronously.
+        check(unsafe { cmvs_gpu_resize(size[0], size[1]) })
     }
     /// Reads the canvas as last presented into tightly packed RGBA rows.
     pub fn read(&mut self, size: [u32; 2], out: &mut [u8]) -> Result<(), GpuError> {
