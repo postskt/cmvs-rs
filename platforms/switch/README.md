@@ -2,6 +2,9 @@
 
 实验性 NRO 播放器：deko3d GPU 合成（可切回软件渲染）、文字、Vorbis 音频、手柄与触摸、存档、软键盘及多游戏选择。未知游戏与未实现指令会报错。
 
+> 二次移植增强（通用启动器路径、参数化按键、快捷键、NSP 直启、启动动画跳过修复）
+> 见 [PORT-ENHANCEMENTS.md](PORT-ENHANCEMENTS.md)；NSP 封包见 [NSP-PACKING.md](NSP-PACKING.md)。
+
 ## 构建
 
 在仓库根目录执行（需要 Docker）：
