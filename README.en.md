@@ -1,110 +1,88 @@
-# cmvs-rs
+# cmvs-rs Switch Port Enhancements
 
-[简体中文](README.md) | English
+English | [简体中文](README.md)
 
-A **Rust** reimplementation of Purple SOFTWARE's CMVS engine.
+This repository is a **Nintendo Switch port-enhancement fork** of
+[Shizuku-in/cmvs-rs](https://github.com/Shizuku-in/cmvs-rs).
 
-## Demos
+**Upstream attribution**: the upstream project was created by **gkouen (Shizuku-in)** — a Rust
+research and reimplementation of Purple software's CMVS visual-novel engine. All credit for the
+engine and its architecture goes to the original author; this fork only adds porting enhancements
+on top of the upstream Switch player.
 
-<table>
-  <tr>
-    <th colspan="2">Amatsutsumi</th>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/images/amatsutsumi_windows11.webp" alt="Windows Example of Amatsutsumi" width="100%">
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/images/amatsutsumi_ubuntu.webp" alt="Linux Example of Amatsutsumi" width="100%">
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Windows</strong></td>
-    <td align="center"><strong>Linux</strong></td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/images/amatsutsumi_android.webp" alt="Android Example of Amatsutsumi" width="100%">
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/images/amatsutsumi_switch.webp" alt="Switch (Ryujinx) Example of Amatsutsumi" width="100%">
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Android</strong></td>
-    <td align="center"><strong>Switch (Ryujinx)</strong></td>
-  </tr>
-  <tr>
-    <th colspan="2">Aoitori</th>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/images/aoitori_windows11.webp" alt="Windows Example of Aoitori" width="100%">
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/images/aoitori_ubuntu.webp" alt="Linux Example of Aoitori" width="100%">
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Windows</strong></td>
-    <td align="center"><strong>Linux</strong></td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/images/aoitori_android.webp" alt="Android Example of Aoitori" width="100%">
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/images/aoitori_switch.webp" alt="Switch (Ryujinx) Example of Aoitori" width="100%">
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Android</strong></td>
-    <td align="center"><strong>Switch (Ryujinx)</strong></td>
-  </tr>
-</table>
+**License**: the upstream project is dual-licensed under MIT OR Apache-2.0, which explicitly
+permits modification and redistribution. All new/modified code in this fork stays under the same
+dual license; upstream copyright notices, full license texts and third-party notices are retained
+in [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE) and
+[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt). The Apache-2.0 §4(b) modification notice
+lives in [platforms/switch/PORT-ENHANCEMENTS.md](platforms/switch/PORT-ENHANCEMENTS.md).
 
-## Getting Started
+## Demo (tested on Ryujinx)
 
-Requires **Rust 1.89+ stable**. The `--offline` flag requires dependencies to be cached locally.
+Test game: *Amatsutsumi* (Purple software), docked 1080p, 60 FPS.
 
-```bash
-cargo run --offline -- "<game-directory>/data/pack/start.ps3"
-cargo test --offline
-```
+| Title screen (60.01 FPS) | Chapter start | Dialogue (Shift-JIS Japanese) |
+|---|---|---|
+| ![](docs/images/switch-port/switch-title-60fps.png) | ![](docs/images/switch-port/switch-chapter-start.png) | ![](docs/images/switch-port/switch-dialogue.png) |
 
-See the [Running Guide](docs/guides/running.md) for desktop previews, startup snapshot barriers, fonts, audio, and a separate user data directory. See the [CLI Guide](docs/guides/cli.md) for inspection tools.
+Full verified chain: title → start → dialogue → quick save/load → NSP direct boot (details in
+[platforms/switch/PORT-ENHANCEMENTS.md](platforms/switch/PORT-ENHANCEMENTS.md)).
 
-## Platforms
+## What this fork adds
 
-| Platform | Target |
+On top of the upstream Switch player (deko3d GPU rendering, multi-game list, encoding
+auto-detection — see the upstream repo):
+
+| Enhancement | What it does |
 |---|---|
-| Windows / Linux / MacOS | Host |
-| iOS | aarch64-apple-ios |
-| Android | aarch64-linux-android, x86_64-linux-android |
-| Web | wasm32-unknown-unknown |
-| Switch | aarch64-switch |
-| PS Vita | armv7-sony-vita-newlibeabihf |
+| **Per-game button mapping** | `buttons.txt` remaps the pad per game (pad → engine input codes), with two-key combos; no code changes needed |
+| **Save/load hotkeys** | X/Y/ZL+ZR auto-click the game's own save/load/config toolbar; L+X / L+Y host-snapshot quick save/load (slot 860, compatible with the in-game quick save), with OSD feedback |
+| **Single-game NSP direct boot** | One NSP per game, boots from the HOME menu like a retail title. Mode A (data bundled) / mode B (2.6 MB stub pointing at SD data) packed by one script with a `pack_check` zero-hard-failure gate |
+| **Attract-movie skip fix** | Holding skip during a movie now injects a decide press — the movie stops within 2 frames (headless-probe verified), without touching the shared engine or game scripts |
+| **Docked/handheld resolution** | 1080p docked / 720p handheld, switched dynamically |
+| **CJK support** | Shift-JIS decoding, CJK paths and game folder names, FAT32/exFAT-save compatible |
+| **Docker-less Windows build** | `build-player-win.sh` cross-builds in one step (devkitA64 → ELF → NRO) |
 
-## Documentation and Development
+See [platforms/switch/PORT-ENHANCEMENTS.md](platforms/switch/PORT-ENHANCEMENTS.md) (button map,
+build guide, fix notes) and [platforms/switch/NSP-PACKING.md](platforms/switch/NSP-PACKING.md)
+(NSP packing manual).
 
-- [Current Status](docs/status.md)
-- [Game Archive](docs/games/README.md)
-- [Documentation Index and Archiving Rules](docs/README.md): find documentation by purpose.
-- [Architecture](docs/architecture.md) and [Workspace](docs/workspace.md): module responsibilities, dependencies, and the full set of validation commands.
-- [Research Guidelines](docs/research.md): evidence requirements and steps for adding support for a new game.
-- [Engine Profiles](docs/design/engine-profiles.md): gates for selecting command semantics by engine build.
-- [References and Licensing](docs/references.md): pinned commits, third-party dependencies, and reuse boundaries.
+## Quick start
 
-Before submitting changes, run:
+Requires Rust 1.89+ stable and devkitA64:
 
-```bash
-cargo fmt --check
-cargo test --offline
-cargo clippy --offline --all-targets -- -D warnings
+```sh
+# Cross-build the NRO (Windows Git Bash)
+sh platforms/switch/scripts/build-player-win.sh
 ```
 
-Tests contain only synthetic data. After changing decoding algorithms, also validate against real samples kept outside the repository and an independent Python implementation. For changes involving backends or features, run the additional all-features checks described in [Workspace](docs/workspace.md).
+Put `platforms/switch/build/cmvs-switch.nro` into `switch/cmvs/` on the SD card and your legally
+obtained game data into `sdmc:/switch/cmvs/<game>/` (**no game assets are included in or
+distributed by this repository**). For NSP packing see
+[NSP-PACKING.md](platforms/switch/NSP-PACKING.md).
+
+## Verification status
+
+- ✅ Fully working on Ryujinx 1.3.3 (strict mode): title → start → dialogue → quick save/load → NSP direct boot, 60 FPS
+- ✅ NSP direct boot with a real firmware dump, firmware shared-font path, attract-skip fix (headless verified)
+- ⏳ Awaiting hardware: touch, audio out, docked/handheld switching on a real console, FAT32/exFAT cards, NSP install under Atmosphere
+
+## Legal boundaries
+
+- **Game data is not part of this repository**: `data/pack/*.cpz`, `*.cmv` etc. are copyrighted by
+  Purple software and the respective rights holders. Bring your own legally obtained copy;
+  `.gitignore` excludes all game-asset formats.
+- **No keys or NSP artifacts in the repo**: dump your own `prod.keys`; pack NSPs yourself with the script.
+- Not affiliated with Nintendo or Purple software. NSPs require a hacked console with sigpatches.
+
+## Upstream project
+
+Upstream cmvs-rs also targets Windows / Linux / macOS / iOS / Android / Web / PS Vita. For desktop
+builds, CLI tools and the engine research docs, see the
+[upstream README](https://github.com/Shizuku-in/cmvs-rs#readme). The generic guides also apply here:
+[running guide](docs/guides/running.md) · [CLI guide](docs/guides/cli.md) · [architecture](docs/architecture.md).
 
 ## License
 
-[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)
+[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE) — same dual license as upstream; the license
+files are unmodified.
